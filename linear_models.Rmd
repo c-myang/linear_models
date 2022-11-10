@@ -98,5 +98,98 @@ fit %>%
 
 ```
 
+```{r}
+fit %>% 
+  broom::glance() %>% 
+  select(AIC)
+```
+
 As an aside, `broom::tidy` works with lots of things, including most of the functions for model fitting you’re likely to run into (survival, mixed models, additive models, …).
+
+## Diagnostics
+
+We want to get residuals from the model we just fit and plot them.
+
+```{r}
+modelr::add_residuals(nyc_airbnb, fit) %>% 
+  ggplot(aes(x = stars, y = resid)) + 
+  geom_point()
+```
+
+These residuals don't look very random...there is way more variance for stars 4-5 versus 1-2. If we want to do hypothesis testing, we may worry about non-constant variance. 
+
+```{r}
+nyc_airbnb %>% 
+  modelr::add_residuals(fit) %>% 
+  ggplot(aes(x = borough, y = resid)) +
+  geom_violin() + 
+  ylim(-250, 250)
+```
+
+Assumptions for constant variance aren't met but the sample size is big. There are a few things we might try to do here – including creating a formal rule for the exclusion of outliers, transforming the price variable (e.g. using a log transformation), or fitting a model that is robust to outliers. 
+
+## Hypothesis testing
+
+One coefficient (let's say `stars`):
+
+```{r}
+fit %>% 
+  broom::tidy()
+
+fit_null = lm(price ~ stars, data = nyc_airbnb) # Intercept and stars
+fit_alt = lm(price ~ stars + borough, data = nyc_airbnb) #Intercept and 2 variables
+
+anova(fit_null, fit_alt) %>% 
+  broom::tidy()
+```
+
+Note that this works for *nested* models only. Comparing non-nested models is a common problem that requires other methods; we’ll see one approach in cross validation.
+
+# Room type by borough
+
+Interactions...?
+
+```{r}
+fit = 
+  nyc_airbnb %>% 
+  lm(price ~ stars + borough * room_type, data = .)
+
+fit %>% 
+  broom::tidy()
+```
+
+## Nesting data
+
+So...can we fit models by borough? (fit models within a dataframe for each borough?) YES, with `map`!
+
+```{r}
+nest_lm_res =
+  nyc_airbnb %>% 
+  nest(data = -borough) %>% 
+  mutate(
+    models = map(data, ~lm(price ~ stars + room_type, data = .x)),
+    results = map(models, broom::tidy)) %>% 
+  select(-data, -models) %>% 
+  unnest(results)
+```
+
+Quick double check...?
+
+```{r}
+nyc_airbnb %>% 
+  filter(borough == "Bronx") %>% #Change borough name
+  lm(price ~ stars + room_type, data = .) %>% 
+  broom::tidy()
+```
+
+What if we wanted all these boroughs at the same time?
+
+```{r}
+nest_lm_res %>% 
+  select(borough, term, estimate) %>% 
+  mutate(term = fct_inorder(term)) %>% 
+  pivot_wider(
+    names_from = term, values_from = estimate) %>% 
+  knitr::kable(digits = 3)
+```
 
