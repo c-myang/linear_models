@@ -1,0 +1,17 @@
+---
+title: "Cross Validation"
+output: github_document
+date: "2022-11-15"
+---
+
+```{r setup, include = FALSE}
+library(tidyverse)
+library(modelr)
+library(mgcv)
+set.seed(1)
+
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+
+
