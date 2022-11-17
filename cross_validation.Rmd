@@ -55,11 +55,13 @@ To understand what these models have done, I’ll plot the two `gam` fits.
 train_df %>% 
   add_predictions(smooth_mod) %>% 
   ggplot(aes(x = x, y = y)) + geom_point() + 
+  geom_point(data = test_df, color = "red") +
   geom_line(aes(y = pred), color = "red")
 
 train_df %>% 
   add_predictions(wiggly_mod) %>% 
   ggplot(aes(x = x, y = y)) + geom_point() + 
+  geom_point(data = test_df, color = "red") +
   geom_line(aes(y = pred), color = "red")
 ```
 
@@ -85,40 +87,40 @@ rmse(smooth_mod, test_df)
 rmse(wiggly_mod, test_df)
 ```
 
-# Can we iterate...?
+## Can we iterate...?
 
-Luckily, `modelr` has tools to automate elements of the CV process. In particular, `crossv_mc` preforms the training / testing split multiple times, a stores the datasets using list columns.
+Luckily, `modelr` has tools to automate elements of the CV process. In particular, `crossv_mc` performs the training / testing split multiple times, a stores the datasets using list columns. Computes a resample object instead of a dataframe, so we will force it to be a tibble.
 
 ```{r}
-cv_df = crossv_mc(nonlin_df, 100) 
+crossv_df = crossv_mc(nonlin_df, 100) 
 
-cv_df %>% pull(train) %>% .[[1]] %>% as_tibble
+crossv_df %>% pull(train) %>% .[[1]] %>% as_tibble
 ```
 
 Gives us training and testing dataset for each 'split', which is different each time. You're repeating the training/testing split.
 
 ```{r}
 cv_df =
-  cv_df %>% 
+  crossv_mc(nonlin_df, 100) %>% 
   mutate(
     train = map(train, as_tibble),
-    test = map(test, as_tibble))
+    test = map(test, as_tibble)) %>% 
+  mutate(
+    linear_fits = map(.x = train, ~ lm(y ~ x, data = .x)),
+    smooth_fits = map(.x = train, ~ mgcv::gam(y ~ s(x), data = .x)), 
+    wiggly_fits  = map(.x = train, ~gam(y ~ s(x, k = 30), sp = 10e-6, data = .x))
+  ) %>% 
+  mutate(
+    rmse_linear = map2_dbl(.x = linear_fits, .y = test, ~rmse(model = .x, data = .y)),
+    rmse_smooth = map2_dbl(.x = smooth_fits, .y = test, ~rmse(model = .x, data = .y)), 
+    rmse_wiggly = map2_dbl(.x = wiggly_fits, .y = test, ~rmse(model = .x, data = .y))
+  )
 ```
 
 I now have many training and testing datasets, and I’d like to fit my candidate models above and assess prediction accuracy as I did for the single training / testing split. To do this, I’ll fit models and obtain RMSEs using mutate + map & map2.
 
-```{r}
-cv_df = 
-  cv_df %>% 
-  mutate(
-    linear_mod  = map(train, ~lm(y ~ x, data = .x)),
-    smooth_mod  = map(train, ~mgcv::gam(y ~ s(x), data = .x)),
-    wiggly_mod  = map(train, ~gam(y ~ s(x, k = 30), sp = 10e-6, data = .x))) %>% 
-  mutate(
-    rmse_linear = map2_dbl(linear_mod, test, ~rmse(model = .x, data = .y)),
-    rmse_smooth = map2_dbl(smooth_mod, test, ~rmse(model = .x, data = .y)),
-    rmse_wiggly = map2_dbl(wiggly_mod, test, ~rmse(model = .x, data = .y)))
-```
+
+### Make a box plot...
 
 I’m mostly focused on RMSE as a way to compare these models, and the plot below shows the distribution of RMSE values for each candidate model.
 
@@ -133,5 +135,106 @@ cv_df %>%
   mutate(model = fct_inorder(model)) %>% 
   ggplot(aes(x = model, y = rmse)) + geom_violin()
 ```
+
+## Example: Child Growth
+
+We’ll take a quick look at an example involving real data and more realistic candidate model. A cross-sectional study of Nepalese children was carried out to understand the relationships between various measures of growth, including weight and arm circumference. 
+
+```{r}
+growth_df = read_csv("./data/nepalese_children.csv")
+```
+
+```{r}
+growth_df %>% 
+  ggplot(aes(x = weight, y = armc)) + 
+  geom_point(alpha = 0.3)
+```
+
+The plots suggests some non-linearity, especially at the low end of the weight distribution. We’ll try three models: a linear fit; a piecewise linear fit; and a smooth fit using `gam`. 
+
+### Brief aside on piecewise linear models
+
+For the piecewise linear fit, we need to add a “change point term” to our dataframe. 
+
+```{r}
+growth_df = growth_df %>% 
+  mutate(weight_pwl = (weight > 7)*(weight - 7))
+```
+
+When the weight is less than 7, piecewise term is 0, when it is greater than 7, piecewise term > 0.
+
+```{r}
+pwl_model = lm(armc ~ weight + weight_pwl, data = growth_df)
+
+growth_df %>% 
+  add_predictions(pwl_model) %>% 
+  ggplot(aes(x = weight, y = armc)) + geom_point() + 
+  geom_line(aes(y = pred), color = "red")
+```
+
+The result of the plot shows a linear model split into two pieces. There is a linear portion before a weight of 7, and a linear portion after a weight of 7, and they have different slopes.
+
+### Let's look at other models
+
+The code chunk below fits each of the candidate models to the full dataset.
+
+```{r}
+linear_model = lm(armc ~ weight, data = growth_df)
+pwl_model = lm(armc ~ weight + weight_pwl, data = growth_df)
+smooth_model = gam(armc ~ s(weight), data = growth_df)
+```
+
+As before, I’ll plot the three models to get intuition for goodness of fit.
+
+```{r}
+growth_df %>% 
+  gather_predictions(linear_model, pwl_model, smooth_model) %>% 
+  mutate(model = fct_inorder(model)) %>% 
+  ggplot(aes(x = weight, y = armc)) + 
+  geom_point(alpha = .5) +
+  geom_line(aes(y = pred), color = "red") + 
+  facet_grid(~model)
+```
+
+It’s not clear which is best – the linear model is maybe too simple, but the piecewise and non-linear models are pretty similar! Better check prediction errors using the same process as before – again, since I want to fit a gam model, I have to convert the resample objects produced by crossv_mc to dataframes, but wouldn’t have to do this if I only wanted to compare the linear and piecewise models.
+
+```{r}
+cv_df = 
+  crossv_mc(growth_df, 100) %>% 
+  mutate(
+    train = map(train, as_tibble), 
+    test = map(test, as_tibble)
+  )
+```
+
+```{r}
+cv_df = cv_df %>% 
+  mutate(
+    linear_fits = map(.x = train, ~ lm(armc ~ weight, data = .x)),
+    pwl_fits = map(.x = train, ~ lm(armc ~ weight + weight_pwl, data = .x)), 
+    smooth_fits  = map(.x = train, ~ gam(armc ~ s(weight), data = .x))
+  ) %>% 
+  mutate(
+    rmse_linear = map2_dbl(.x = linear_fits, .y = test, ~rmse(model = .x, data = .y)),
+    rmse_pwl = map2_dbl(.x = pwl_fits, .y = test, ~rmse(model = .x, data = .y)), 
+    rmse_smooth = map2_dbl(.x = smooth_fits, .y = test, ~rmse(model = .x, data = .y))
+  )
+```
+
+Finally, plot the prediction error distribution for each candidate model.
+
+```{r}
+cv_df %>% 
+  select(starts_with("rmse")) %>% 
+  pivot_longer(
+    everything(),
+    names_to = "model", 
+    values_to = "rmse",
+    names_prefix = "rmse_") %>% 
+  mutate(model = fct_inorder(model)) %>% 
+  ggplot(aes(x = model, y = rmse)) + geom_boxplot()
+```
+
+Linear appears to have the worst accuracy, while piecewise and smooth appear to be broadly overlapping, with some advantage given to the smooth model. . Which candidate model is best, though, depends a bit on the need to balance complexity with goodness of fit and interpretability. In the end, I’d probably go with the piecewise linear model – the non-linearity is clear enough that it should be accounted for, and the differences between the piecewise and gam fits are small enough that the easy interpretation of the piecewise model “wins”.
 
 
